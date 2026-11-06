@@ -34,7 +34,33 @@ fn canonical_assignment_shape(
     target_y_index: usize,
     dependencies: &ScalarProgramYDependency<'_>,
 ) -> Option<TargetAssignmentShape> {
-    OutputShapes::new(prefix, output, dependencies).for_target(target_y_index)
+    OutputShapes::new(prefix, output, dependencies)
+        .for_target(target_y_index)
+        .or_else(|| {
+            let source = forwarded_output(prefix, output);
+            (source != output)
+                .then(|| OutputShapes::new(prefix, source, dependencies).for_target(target_y_index))
+                .flatten()
+        })
+}
+
+/// The register an output's value is copied from through dense tensor
+/// concatenation. A concatenated lane is its source register under another
+/// name, so when its own expression gives no shape, the source's does: the
+/// direct, zero and affine shapes read the output's own expression, which a
+/// concatenation hides (a residual `c * der(x) - rhs` over an array).
+fn forwarded_output(prefix: ProgramPrefix<'_>, mut output: u32) -> u32 {
+    // Every source is produced earlier, so a chain of concatenations ends.
+    for _ in 0..prefix.len() {
+        let Some(LinearOp::TensorConcatenate { .. }) = producer(prefix, output) else {
+            break;
+        };
+        match concatenate::source_register(prefix, output) {
+            Some(source) if source != output => output = source,
+            _ => break,
+        }
+    }
+    output
 }
 
 /// The assignment shapes of one output. Direct, zero, and affine shapes are
@@ -200,6 +226,33 @@ pub fn derive_target_assignment_shapes(
                 shapes.push((output_offset, shape));
             }
         }
+        // A lane of a concatenation has the shapes of the register it copies
+        // when its own expression has none for a target.
+        let source = forwarded_output(producers.view(), output);
+        if source != output && producer_may_certify(producers.view(), source) {
+            let walked = producers
+                .view()
+                .producer_position(source)
+                .and_then(|position| {
+                    walks
+                        .entry(position)
+                        .or_insert_with(|| dependency_candidates::derive(producers.view(), source))
+                        .as_ref()
+                });
+            let candidates = assignment_candidates(source, dependencies, targets, walked);
+            let source_shapes = OutputShapes::new(producers.view(), source, dependencies);
+            for &target in &candidates {
+                if certified.contains(&(output_offset, target)) {
+                    continue;
+                }
+                let Some(shape) = source_shapes.for_target(target) else {
+                    continue;
+                };
+                if certified.insert((output_offset, shape.target_y_index())) {
+                    shapes.push((output_offset, shape));
+                }
+            }
+        }
     }
     shapes
 }
@@ -236,15 +289,22 @@ fn has_assignment_shape(
     if !producer_may_certify(prefix, output) {
         return false;
     }
-    let shapes = OutputShapes::new(prefix, output, dependencies);
-    if !shapes.fixed.is_empty() {
+    let targets = y_load_indices(prefix.operations());
+    let has_shape = |output: u32| {
+        let shapes = OutputShapes::new(prefix, output, dependencies);
+        if !shapes.fixed.is_empty() {
+            return true;
+        }
+        let walked = dependency_candidates::derive(prefix, output);
+        assignment_candidates(output, dependencies, &targets, walked.as_ref())
+            .into_iter()
+            .any(|target| shapes.for_target(target).is_some())
+    };
+    if has_shape(output) {
         return true;
     }
-    let walked = dependency_candidates::derive(prefix, output);
-    let targets = y_load_indices(prefix.operations());
-    assignment_candidates(output, dependencies, &targets, walked.as_ref())
-        .into_iter()
-        .any(|target| shapes.for_target(target).is_some())
+    let source = forwarded_output(prefix, output);
+    source != output && producer_may_certify(prefix, source) && has_shape(source)
 }
 
 /// One store position's prefix analyses, shared by the outputs it stores.

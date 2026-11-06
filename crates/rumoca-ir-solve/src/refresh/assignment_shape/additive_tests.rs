@@ -169,3 +169,41 @@ fn unknown_on_both_sides_stays_implicit() {
         assert!(derive_target_assignment_shapes(&program).is_empty());
     }
 }
+
+/// `c * x - rhs` for each element of a vector, joined by a concatenation (a state derivative with a
+/// parameter coefficient, `C * der(T[i]) = rhs[i]`): the lane has the shape of the register it copies.
+#[test]
+fn a_concatenated_residual_with_a_parameter_coefficient_isolates_its_unknown() {
+    let mut program = Vec::new();
+    for lane in 0..3_u32 {
+        program.extend([
+            LinearOp::LoadP { dst: 10 * lane, index: 0 },
+            LinearOp::LoadY { dst: 10 * lane + 1, index: lane as usize },
+            LinearOp::Binary { dst: 10 * lane + 2, op: BinaryOp::Mul, lhs: 10 * lane, rhs: 10 * lane + 1 },
+            LinearOp::LoadP { dst: 10 * lane + 3, index: 1 },
+            LinearOp::Binary { dst: 10 * lane + 4, op: BinaryOp::Sub, lhs: 10 * lane + 2, rhs: 10 * lane + 3 },
+        ]);
+    }
+    program.push(LinearOp::TensorConcatenate {
+        dst_start: 100,
+        sources: (0..3)
+            .map(|lane| TensorConcatenateSource {
+                start: 10 * lane + 4,
+                dimensions: [1].into(),
+            })
+            .collect(),
+        dimensions: [3].into(),
+        axis: 0,
+        lanes: 1,
+    });
+    program.push(store(100));
+    for lane in 0..3 {
+        assert!(
+            shapes_of(&program, lane)
+                .iter()
+                .any(|shape| shape.target_y_index() == lane),
+            "lane {lane} has no shape for its unknown: {:?}",
+            shapes_of(&program, lane)
+        );
+    }
+}

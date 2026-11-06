@@ -114,20 +114,39 @@ fn allocate(components: &mut [Component]) -> Result<usize, String> {
             component.virtual_range.start,
         )
     });
-    let mut placed: Vec<usize> = Vec::new();
+    // Placed components are kept by the blocks of operations their lifetimes touch, so a component
+    // meets only the placed ones whose lifetimes share a block with its own instead of every one
+    // (a straight-line program places thousands of short lifetimes, and the scan of all of them
+    // for each made placement grow with the square of the program). The components found are
+    // exactly those whose lifetimes overlap, so the placement is the one a full scan gives.
+    const BLOCK: usize = 32;
+    let horizon = components
+        .iter()
+        .map(|component| component.first.max(component.last))
+        .max()
+        .map_or(0, |last| last + 1);
+    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); horizon / BLOCK + 1];
+    let mut seen = vec![usize::MAX; components.len()];
     let mut extent = 0usize;
-    for index in order {
+    for (turn, index) in order.into_iter().enumerate() {
         let current = &components[index];
         let width = current.virtual_range.len();
+        let blocks = current.first.min(current.last) / BLOCK..=current.first.max(current.last) / BLOCK;
         let mut occupied = Vec::new();
-        for &other in &placed {
-            let other = &components[other];
-            if other.first <= current.last && current.first <= other.last {
-                let end = other
-                    .physical
-                    .checked_add(other.virtual_range.len())
-                    .ok_or("native register placement overflows")?;
-                occupied.push(other.physical..end);
+        for block in blocks.clone() {
+            for &other in &buckets[block] {
+                if seen[other] == turn {
+                    continue;
+                }
+                seen[other] = turn;
+                let other = &components[other];
+                if other.first <= current.last && current.first <= other.last {
+                    let end = other
+                        .physical
+                        .checked_add(other.virtual_range.len())
+                        .ok_or("native register placement overflows")?;
+                    occupied.push(other.physical..end);
+                }
             }
         }
         occupied.sort_by_key(|range| (range.start, range.end));
@@ -146,7 +165,9 @@ fn allocate(components: &mut [Component]) -> Result<usize, String> {
             .ok_or("native register placement overflows")?;
         components[index].physical = physical;
         extent = extent.max(end);
-        placed.push(index);
+        for block in blocks {
+            buckets[block].push(index);
+        }
     }
     Ok(extent)
 }
