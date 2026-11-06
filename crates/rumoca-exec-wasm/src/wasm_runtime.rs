@@ -177,7 +177,46 @@ impl WasmKernelRuntime {
     }
 }
 
+/// Instances kept for reuse. A module holds no state of its own (every value
+/// it reads or writes sits in the caller's memory, passed by pointer), so the
+/// sessions of one model, which emit identical modules, share one instance
+/// instead of one each. The browser admits only about a hundred live
+/// instances; a session builds a dozen or more, and a page keeps several
+/// sessions open.
+const INSTANCE_CACHE_LIMIT: usize = 32;
+
+thread_local! {
+    static INSTANCES: std::cell::RefCell<Vec<(Vec<u8>, js_sys::WebAssembly::Instance)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn instantiate(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+    let cached = INSTANCES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let at = cache
+            .iter()
+            .position(|(bytes, _)| bytes.as_slice() == module_bytes)?;
+        // Most recently used last, so the oldest is the one to drop.
+        let entry = cache.remove(at);
+        let instance = entry.1.clone();
+        cache.push(entry);
+        Some(instance)
+    });
+    if let Some(instance) = cached {
+        return Ok(instance);
+    }
+    let instance = instantiate_new(module_bytes)?;
+    INSTANCES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= INSTANCE_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push((module_bytes.to_vec(), instance.clone()));
+    });
+    Ok(instance)
+}
+
+fn instantiate_new(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
     use js_sys::Object;
     use js_sys::Reflect;
     use js_sys::Uint8Array;
