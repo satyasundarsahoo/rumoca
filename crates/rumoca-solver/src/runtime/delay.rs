@@ -723,6 +723,16 @@ fn smooth_interpolation(
         })
         .sum::<f64>();
     let value = base + offset;
+    // A history that only rises (or only falls) across the stencil, as a step does, must not be read back outside the two points that bracket the query: a cubic through a step overshoots
+    // (a ringing that an integrator downstream keeps). The limiter leaves a stencil with an extremum, where the cubic is the better reading, as it was.
+    let values: Vec<f64> = stencil.iter().map(|point| point.value).collect();
+    let monotone = values.windows(2).all(|w| w[0] <= w[1]) || values.windows(2).all(|w| w[0] >= w[1]);
+    let value = if monotone {
+        let (low, high) = (points[lower].value.min(next.value), points[lower].value.max(next.value));
+        value.clamp(low, high)
+    } else {
+        value
+    };
     value.is_finite().then_some(value)
 }
 
