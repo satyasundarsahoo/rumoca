@@ -86,10 +86,8 @@ fn tensor_affine_count(block: &PreparedScalarProgramBlock) -> usize {
 }
 
 fn assignment_shape_count(block: &PreparedScalarProgramBlock) -> usize {
-    block
-        .row_assignment_shapes
-        .iter()
-        .map(|row| row.len())
+    (0..block.row_assignment_shapes.len())
+        .map(|row| block.row_shapes(row).len())
         .sum()
 }
 

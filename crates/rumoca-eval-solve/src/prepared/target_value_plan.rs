@@ -188,7 +188,7 @@ impl PreparedScalarProgramBlock {
         let Some(&store) = positions.get(output_offset) else {
             return prefix_len;
         };
-        self.row_assignment_shapes[row]
+        self.row_shapes(row)
             .iter()
             .filter(|(output, shape)| {
                 positions.get(*output) == Some(&store) && shape.expr_eval_len() <= store
@@ -214,7 +214,7 @@ impl PreparedScalarProgramBlock {
             || invalid_prepared_row("issued coefficient output cannot materialize");
         let positions = rumoca_ir_solve::output_store_positions(&self.block.programs()[row]);
         let store = positions.get(selected_output).copied();
-        for (candidate_output, shape) in self.row_assignment_shapes[row].iter() {
+        for (candidate_output, shape) in self.row_shapes(row).iter() {
             let in_family = if store.is_some() && positions.get(*candidate_output).copied() == store {
                 shape.expr_eval_len() <= prefix_len
             } else {

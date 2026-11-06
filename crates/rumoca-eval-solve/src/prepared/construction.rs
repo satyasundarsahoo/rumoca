@@ -39,7 +39,7 @@ struct PreparedRow {
     reverse_y_gradient_supported: bool,
     is_causal: bool,
     requires_checked_observation: bool,
-    assignment_shapes: Box<[(usize, TargetAssignmentShape)]>,
+    assignment_shapes: std::cell::OnceCell<Box<[(usize, TargetAssignmentShape)]>>,
     tensor_affine_assignments: tensor_affine_assignment::PreparedTensorAffineAssignments,
     parameter_indices: Box<[usize]>,
     parameter_static_y_gradient_params: Option<Box<[usize]>>,
@@ -68,10 +68,8 @@ fn prepare_row(
             .with_source_span(span)
     })?;
     let assignment_shapes = match facts {
-        RowFacts::Full => target_assignment_shapes_with_output_offsets(row)
-            .map_err(|error| error.with_source_span(span))?
-            .into_boxed_slice(),
-        RowFacts::Evaluation => Box::default(),
+        RowFacts::Full => std::cell::OnceCell::new(),
+        RowFacts::Evaluation => std::cell::OnceCell::from(Box::default()),
     };
     let tensor_affine_assignments =
         tensor_affine_assignment::PreparedTensorAffineAssignments::default();

@@ -60,7 +60,6 @@ use affine_eval::*;
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
 use assignment_shape::eval_assignment_shape;
-use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 pub use construction::{PreparedEvaluationBlock, replaced_programs};
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
@@ -124,7 +123,9 @@ pub struct PreparedScalarProgramBlock {
     /// Programs holding an assertion observation, which only the checked
     /// event-action adapter evaluates, so no execution backend compiles them.
     row_requires_checked_observation: Vec<bool>,
-    row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
+    /// Derived on first use: the shapes matter only to rows a target query reaches,
+    /// and finding them walks the whole row program.
+    row_assignment_shapes: Vec<std::cell::OnceCell<Box<[(usize, TargetAssignmentShape)]>>>,
     target_value_families: RefCell<target_value_plan::TargetValueFamilies>,
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
@@ -494,9 +495,22 @@ impl PreparedScalarProgramBlock {
     /// (`target = expr`); its full program then evaluates the residual, while
     /// shapeless rows with an implicit target evaluate the target value.
     pub fn row_has_assignment_shape(&self, row_idx: usize) -> bool {
-        self.row_assignment_shapes
-            .get(row_idx)
-            .is_some_and(|shapes| !shapes.is_empty())
+        row_idx < self.row_assignment_shapes.len() && !self.row_shapes(row_idx).is_empty()
+    }
+
+    /// The assignment shapes of one row, derived the first time they are asked for.
+    pub(super) fn row_shapes(&self, row_idx: usize) -> &[(usize, TargetAssignmentShape)] {
+        let Some(cell) = self.row_assignment_shapes.get(row_idx) else {
+            return &[];
+        };
+        cell.get_or_init(|| {
+            self.block
+                .program(row_idx)
+                .map(|row| {
+                    rumoca_ir_solve::derive_target_assignment_shapes(row).into_boxed_slice()
+                })
+                .unwrap_or_default()
+        })
     }
 
     pub fn row_output_count(&self, row_idx: usize) -> Option<usize> {
@@ -862,7 +876,8 @@ impl PreparedScalarProgramBlock {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
-            if self.row_assignment_shapes[request.row_idx]
+            if self
+                .row_shapes(request.row_idx)
                 .iter()
                 .any(|(output, _)| *output == selected_output)
             {
@@ -989,8 +1004,7 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> Option<&TargetAssignmentShape> {
-        self.row_assignment_shapes
-            .get(row_idx)?
+        self.row_shapes(row_idx)
             .iter()
             .find_map(|(output, shape)| {
                 (*output == output_offset && shape.target_y_index() == target_y_index)
