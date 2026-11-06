@@ -19,7 +19,7 @@ pub(in crate::emit) struct RegisterLayout {
 
 impl RegisterLayout {
     pub(in crate::emit) fn derive(program: &[LinearOp]) -> Result<Self, String> {
-        let versions = RegisterVersionProgram::derive(program)
+        let versions = derive_versions(program)
             .ok_or("native register layout requires canonical register versions")?;
         let mut constraints = Vec::new();
         for (index, operation) in versions.operations().iter().enumerate() {
@@ -89,6 +89,11 @@ impl RegisterLayout {
     }
 }
 
+#[inline(never)]
+fn derive_versions(program: &[LinearOp]) -> Option<RegisterVersionProgram> {
+    RegisterVersionProgram::derive(program)
+}
+
 fn extend_selection(entry: &mut (Range<usize>, usize), range: &Range<usize>, producer: usize) {
     entry.0.start = entry.0.start.min(range.start);
     entry.0.end = entry.0.end.max(range.end);
@@ -104,6 +109,7 @@ fn component(virtual_range: Range<usize>, first: usize, last: usize) -> Componen
     }
 }
 
+#[inline(never)]
 fn allocate(components: &mut [Component]) -> Result<usize, String> {
     let mut order: Vec<_> = (0..components.len()).collect();
     order.sort_by_key(|&index| {
@@ -125,14 +131,22 @@ fn allocate(components: &mut [Component]) -> Result<usize, String> {
         .map(|component| component.first.max(component.last))
         .max()
         .map_or(0, |last| last + 1);
+    // A lifetime spanning more than LONG blocks is kept apart, sorted by its physical start: a
+    // program holds thousands of them, and filing each in every block it touches made every short
+    // lifetime scan and sort them again. They are met once per component, already in address order.
+    const LONG: usize = 4;
     let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); horizon / BLOCK + 1];
+    // (physical start, physical end, first, last) of the placed long lifetimes.
+    let mut long: Vec<(usize, usize, usize, usize)> = Vec::new();
     let mut seen = vec![usize::MAX; components.len()];
     let mut extent = 0usize;
     for (turn, index) in order.into_iter().enumerate() {
-        let current = &components[index];
-        let width = current.virtual_range.len();
-        let blocks = current.first.min(current.last) / BLOCK..=current.first.max(current.last) / BLOCK;
-        let mut occupied = Vec::new();
+        let (first, last, width) = {
+            let current = &components[index];
+            (current.first, current.last, current.virtual_range.len())
+        };
+        let blocks = first.min(last) / BLOCK..=first.max(last) / BLOCK;
+        let mut local = Vec::new();
         for block in blocks.clone() {
             for &other in &buckets[block] {
                 if seen[other] == turn {
@@ -140,18 +154,31 @@ fn allocate(components: &mut [Component]) -> Result<usize, String> {
                 }
                 seen[other] = turn;
                 let other = &components[other];
-                if other.first <= current.last && current.first <= other.last {
+                if other.first <= last && first <= other.last {
                     let end = other
                         .physical
                         .checked_add(other.virtual_range.len())
                         .ok_or("native register placement overflows")?;
-                    occupied.push(other.physical..end);
+                    local.push(other.physical..end);
                 }
             }
         }
-        occupied.sort_by_key(|range| (range.start, range.end));
+        local.sort_by_key(|range| (range.start, range.end));
+        let mut local = local.into_iter().peekable();
+        let mut long_iter = long
+            .iter()
+            .filter(|&&(_, _, first_other, last_other)| first_other <= last && first <= last_other)
+            .map(|&(start, end, _, _)| start..end)
+            .peekable();
         let mut physical = 0usize;
-        for range in occupied {
+        loop {
+            let range = match (local.peek(), long_iter.peek()) {
+                (Some(a), Some(b)) if (b.start, b.end) < (a.start, a.end) => long_iter.next(),
+                (Some(_), _) => local.next(),
+                (None, Some(_)) => long_iter.next(),
+                (None, None) => None,
+            };
+            let Some(range) = range else { break };
             let end = physical
                 .checked_add(width)
                 .ok_or("native register placement overflows")?;
@@ -165,8 +192,14 @@ fn allocate(components: &mut [Component]) -> Result<usize, String> {
             .ok_or("native register placement overflows")?;
         components[index].physical = physical;
         extent = extent.max(end);
-        for block in blocks {
-            buckets[block].push(index);
+        if blocks.clone().count() > LONG {
+            let key = (physical, end, first, last);
+            let at = long.partition_point(|entry| (entry.0, entry.1) < (key.0, key.1));
+            long.insert(at, key);
+        } else {
+            for block in blocks {
+                buckets[block].push(index);
+            }
         }
     }
     Ok(extent)

@@ -619,6 +619,17 @@ pub(super) fn non_causal_assignment_operation(operation: &LinearOp) -> bool {
     )
 }
 
+/// The position of the store operation that emits each output, in output order.
+///
+/// Outputs sharing a position share their prefix, so every operation before
+/// that position is available to all of them.
+#[must_use]
+pub fn output_store_positions(program: &[LinearOp]) -> Vec<usize> {
+    store_output_registers(program)
+        .map(|(_, position)| position)
+        .collect()
+}
+
 fn store_output_registers(program: &[LinearOp]) -> impl Iterator<Item = (u32, usize)> + '_ {
     program
         .iter()

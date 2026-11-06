@@ -158,7 +158,7 @@ impl TargetQueries {
                 result.bindings.insert(key, binding.clone());
                 continue;
             }
-            let family = (program, plan.canonical_prefix_len());
+            let family = (program, plan.family_len());
             let selected = plan.private_result_offset();
             let (code, family) = match families.get(&family) {
                 Some((code, plan)) => (Rc::clone(code), Rc::clone(plan)),

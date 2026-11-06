@@ -31,7 +31,8 @@ use assignment_shape::canonical_assignment_shape_for_output;
 pub use assignment_shape::tensor_affine::AffineTensorProjection;
 pub use assignment_shape::{
     OutputYReads, derive_target_assignment_shape_for_output, derive_target_assignment_shapes,
-    isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
+    isolates_through_zero_coefficient, isolator_coefficient_proof, output_store_positions,
+    output_y_reads,
 };
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};

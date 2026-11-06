@@ -29,6 +29,7 @@ pub struct PreparedTargetValuePlan {
     output: usize,
     target: usize,
     canonical_prefix_len: usize,
+    family_len: usize,
     private_result_offset: usize,
     coefficient_outputs: Arc<[(usize, usize, usize)]>,
 }
@@ -45,6 +46,11 @@ impl PreparedTargetValuePlan {
     }
     pub const fn target(&self) -> usize {
         self.target
+    }
+    /// The prefix length of the program this plan's family shares; plans of one
+    /// row with equal values select from one program.
+    pub const fn family_len(&self) -> usize {
+        self.family_len
     }
     pub const fn canonical_prefix_len(&self) -> usize {
         self.canonical_prefix_len
@@ -74,18 +80,34 @@ impl PreparedScalarProgramBlock {
         else {
             return Ok(None);
         };
+        // The outputs of one store share every operation before it, so one
+        // family at the longest prefix any of them needs serves them all: a
+        // tensor of N lanes emits one program, not N prefix copies.
+        let family_len = self.target_value_family_len(row_idx, output_offset, prefix_len);
         let mut families = self.target_value_families.borrow_mut();
-        let key = (row_idx, prefix_len);
+        let key = (row_idx, family_len);
         let family = match families.entry(key) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 // Retain every original prefix operation, including discarded output stores.
                 // Typed calls retain all tuple results and their issued table owner.
-                let mut operations = prefix.to_vec();
+                let family_prefix = self
+                    .block
+                    .programs()
+                    .get(row_idx)
+                    .and_then(|source| source.get(..family_len))
+                    .ok_or_else(|| {
+                        invalid_prepared_row_with_span(
+                            "issued target-value prefix is out of bounds",
+                            Some(span),
+                        )
+                    })?;
+                let mut operations = family_prefix.to_vec();
                 let mut coefficient_outputs = Vec::new();
                 let selections = self.append_target_value_family(
                     row_idx,
-                    prefix_len,
+                    output_offset,
+                    family_len,
                     &mut operations,
                     &mut coefficient_outputs,
                 )?;
@@ -113,6 +135,7 @@ impl PreparedScalarProgramBlock {
             output: output_offset,
             target: target_y_index,
             canonical_prefix_len: prefix.len(),
+            family_len,
             private_result_offset,
             coefficient_outputs: Arc::clone(&family.coefficient_outputs),
         }))
@@ -150,9 +173,34 @@ impl PreparedScalarProgramBlock {
         }))
     }
 
+    /// The longest prefix any output stored together with `output_offset`
+    /// evaluates, never shorter than `prefix_len`.
+    fn target_value_family_len(
+        &self,
+        row: usize,
+        output_offset: usize,
+        prefix_len: usize,
+    ) -> usize {
+        let Some(program) = self.block.programs().get(row) else {
+            return prefix_len;
+        };
+        let positions = rumoca_ir_solve::output_store_positions(program);
+        let Some(&store) = positions.get(output_offset) else {
+            return prefix_len;
+        };
+        self.row_assignment_shapes[row]
+            .iter()
+            .filter(|(output, shape)| {
+                positions.get(*output) == Some(&store) && shape.expr_eval_len() <= store
+            })
+            .map(|(_, shape)| shape.expr_eval_len())
+            .fold(prefix_len, usize::max)
+    }
+
     fn append_target_value_family(
         &self,
         row: usize,
+        selected_output: usize,
         prefix_len: usize,
         operations: &mut Vec<LinearOp>,
         coefficient_outputs: &mut Vec<(usize, usize, usize)>,
@@ -164,11 +212,16 @@ impl PreparedScalarProgramBlock {
             .ok_or_else(|| invalid_prepared_row("issued target prefix cannot materialize"))?;
         let coefficient_output_error =
             || invalid_prepared_row("issued coefficient output cannot materialize");
+        let positions = rumoca_ir_solve::output_store_positions(&self.block.programs()[row]);
+        let store = positions.get(selected_output).copied();
         for (candidate_output, shape) in self.row_assignment_shapes[row].iter() {
+            let in_family = if store.is_some() && positions.get(*candidate_output).copied() == store {
+                shape.expr_eval_len() <= prefix_len
+            } else {
+                shape.expr_eval_len() == prefix_len
+            };
             // The canonical evaluator selects the first shape for this pair.
-            if !issued.insert((*candidate_output, shape.target_y_index()))
-                || shape.expr_eval_len() != prefix_len
-            {
+            if !issued.insert((*candidate_output, shape.target_y_index())) || !in_family {
                 continue;
             }
             let offset = output_offset;
