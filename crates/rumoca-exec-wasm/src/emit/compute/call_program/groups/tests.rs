@@ -151,6 +151,7 @@ impl Runner {
         .unwrap();
         let mut linker = Linker::new(&engine);
         linker.define("env", "memory", memory).unwrap();
+        crate::host_runtime::define_arena(&mut linker, &mut store, &module).unwrap();
         linker
             .func_wrap(
                 "env",

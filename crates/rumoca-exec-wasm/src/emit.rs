@@ -187,6 +187,19 @@ fn add_import_section(
     imports: &[MathImport],
     type_ids: &TypeIds,
 ) -> ImportCatalog {
+    add_import_section_with_arena(module, imports, type_ids, None)
+}
+
+/// As [`add_import_section`], plus the shared scratch memory (memory index 1)
+/// when the module evaluates tensors in an arena. The required size travels in
+/// the import's name (`arena<pages>`), so a host can size one shared memory
+/// before instantiating, and live modules do not each reserve their own.
+fn add_import_section_with_arena(
+    module: &mut Module,
+    imports: &[MathImport],
+    type_ids: &TypeIds,
+    arena_pages: Option<u64>,
+) -> ImportCatalog {
     let mut import_section = ImportSection::new();
     import_section.import(
         "env",
@@ -199,6 +212,19 @@ fn add_import_section(
             page_size_log2: None,
         }),
     );
+    if let Some(pages) = arena_pages {
+        import_section.import(
+            "env",
+            &format!("arena{pages}"),
+            EntityType::Memory(MemoryType {
+                minimum: 1,
+                maximum: None,
+                memory64: false,
+                shared: false,
+                page_size_log2: None,
+            }),
+        );
+    }
     let mut function_indices = BTreeMap::new();
     for import in imports {
         let type_id = if import.is_binary() {

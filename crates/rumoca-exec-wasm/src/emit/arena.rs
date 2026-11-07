@@ -137,7 +137,7 @@ impl ArenaPlan {
     }
 
     pub(super) fn add_memory(&self, module: &mut Module) {
-        let pages = (self.registers * 8).div_ceil(65536).max(1) as u64;
+        let pages = self.pages();
         let mut memory = MemorySection::new();
         memory.memory(MemoryType {
             minimum: pages,
@@ -147,6 +147,10 @@ impl ArenaPlan {
             page_size_log2: None,
         });
         module.section(&memory);
+    }
+
+    pub(super) fn pages(&self) -> u64 {
+        (self.registers * 8).div_ceil(65536).max(1) as u64
     }
 }
 

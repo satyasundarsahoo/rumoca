@@ -56,6 +56,13 @@ impl Runner {
         .unwrap();
         let mut linker = Linker::new(&engine);
         linker.define("env", "memory", memory).unwrap();
+        for import in module.imports() {
+            if import.name().starts_with("arena") {
+                let pages: u32 = import.name()["arena".len()..].parse().unwrap();
+                let scratch = Memory::new(&mut store, MemoryType::new(pages, None)).unwrap();
+                linker.define("env", import.name(), scratch).unwrap();
+            }
+        }
         define_math(&mut linker, &module);
         let instance = linker
             .instantiate(&mut store, &module)
@@ -163,7 +170,7 @@ pub(super) fn bytes(values: &[f64]) -> Vec<u8> {
 fn define_math(linker: &mut Linker<()>, module: &Module) {
     for import in module.imports() {
         let name = import.name();
-        if import.module() != "env" || name == "memory" {
+        if import.module() != "env" || name == "memory" || name.starts_with("arena") {
             continue;
         }
         match name {

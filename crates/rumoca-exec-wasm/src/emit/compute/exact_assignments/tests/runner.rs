@@ -32,6 +32,7 @@ impl Runner {
         let module = Module::new(&self.engine, artifact.module_bytes()).unwrap();
         let mut linker = Linker::new(&self.engine);
         linker.define("env", "memory", self.public).unwrap();
+        crate::host_runtime::define_arena(&mut linker, &mut self.store, &module).unwrap();
         define_math(&mut linker);
         linker
             .instantiate(&mut self.store, &module)

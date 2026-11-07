@@ -164,12 +164,47 @@ pub(crate) fn instantiate_host_module(
     linker
         .define("env", "memory", Extern::Memory(memory))
         .map_err(|e| backend("memory import set failed", e))?;
+    define_arena(&mut linker, &mut store, &module)?;
     define_math(&mut linker)?;
     let instance = linker
         .instantiate(&mut store, &module)
         .and_then(|pre| pre.start(&mut store))
         .map_err(|e| backend("module instantiate failed", e))?;
     Ok((store, memory, instance))
+}
+
+/// Give the module its own scratch memory, sized as its `arena<pages>` import asks.
+pub(crate) fn define_arena<T>(
+    linker: &mut Linker<T>,
+    store: &mut Store<T>,
+    module: &Module,
+) -> Result<(), WasmCompileError> {
+    for import in module.imports() {
+        if let wasmi::ExternType::Memory(ty) = import.ty()
+            && import.name().starts_with("arena")
+        {
+            let pages = arena_pages(import.name())?.max(ty.minimum());
+            let scratch = Memory::new(
+                &mut *store,
+                MemoryType::new(
+                    u32::try_from(pages).map_err(|e| backend("arena pages", e))?,
+                    None,
+                ),
+            )
+            .map_err(|e| backend("arena memory create failed", e))?;
+            linker
+                .define("env", import.name(), Extern::Memory(scratch))
+                .map_err(|e| backend("arena import set failed", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// The size, in pages, a module asks of its scratch memory: `arena<pages>`.
+pub(crate) fn arena_pages(name: &str) -> Result<u64, WasmCompileError> {
+    name.strip_prefix("arena")
+        .and_then(|pages| pages.parse().ok())
+        .ok_or_else(|| WasmCompileError::Backend(format!("malformed arena import {name}")))
 }
 
 pub(crate) fn ensure_memory_capacity(

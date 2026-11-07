@@ -76,7 +76,7 @@ fn nested_math_import_keeps_distinct_kernel_memories_and_outer_old_register_valu
 }
 
 #[test]
-fn private_modules_define_their_register_memory_and_import_no_arena() {
+fn private_modules_import_the_shared_register_memory_and_define_none() {
     let artifact = artifact(true);
     let (mut imports, mut memories) = (0, 0);
     for payload in wasmparser::Parser::new(0).parse_all(artifact.module_bytes()) {
@@ -86,8 +86,8 @@ fn private_modules_define_their_register_memory_and_import_no_arena() {
             _ => {}
         }
     }
-    // Public memory and the complete math ABI; private registers.
-    assert_eq!((imports as usize, memories), (1 + MathImport::ALL.len(), 1));
+    // Public memory, the shared register memory and the complete math ABI.
+    assert_eq!((imports as usize, memories), (2 + MathImport::ALL.len(), 0));
     let mut runner = Runner::new();
     let call = runner.instance(&artifact);
     assert_eq!(runner.run(call, [2., 3.]), (0, 6f64.to_bits()));

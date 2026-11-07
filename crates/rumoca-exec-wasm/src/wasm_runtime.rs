@@ -232,12 +232,69 @@ fn instantiate_new(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance,
     Reflect::set(&env, &JsValue::from_str("memory"), &wasm_bindgen::memory())
         .map_err(|err| WasmCompileError::Backend(format!("memory import set failed: {err:?}")))?;
     install_math_abi(&env)?;
+    install_arena(&module, &env)?;
 
     Reflect::set(&imports, &JsValue::from_str("env"), &env)
         .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
 
     WebAssembly::Instance::new(&module, &imports)
         .map_err(|err| WasmCompileError::Backend(format!("module instantiate failed: {err:?}")))
+}
+
+thread_local! {
+    // One scratch memory serves every module's tensor registers. A module that
+    // defined its own would reserve address space for itself, and the engine
+    // refuses new instances after a few dozen of them.
+    static ARENA: std::cell::RefCell<Option<js_sys::WebAssembly::Memory>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Bind a module's `arena<pages>` import to the shared scratch memory, grown to
+/// at least that many pages.
+fn install_arena(
+    module: &js_sys::WebAssembly::Module,
+    env: &js_sys::Object,
+) -> Result<(), WasmCompileError> {
+    use js_sys::Reflect;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let fail = |what: &str, err: JsValue| WasmCompileError::Backend(format!("{what}: {err:?}"));
+    for import in js_sys::WebAssembly::Module::imports(module).iter() {
+        let name = Reflect::get(&import, &JsValue::from_str("name"))
+            .ok()
+            .and_then(|name| name.as_string())
+            .unwrap_or_default();
+        let Some(pages) = name
+            .strip_prefix("arena")
+            .and_then(|pages| pages.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let memory = ARENA.with(|slot| -> Result<js_sys::WebAssembly::Memory, WasmCompileError> {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                let descriptor = js_sys::Object::new();
+                Reflect::set(&descriptor, &"initial".into(), &JsValue::from_f64(1.0))
+                    .map_err(|e| fail("arena descriptor", e))?;
+                *slot = Some(
+                    js_sys::WebAssembly::Memory::new(&descriptor)
+                        .map_err(|e| fail("arena create failed", e))?,
+                );
+            }
+            let memory = slot.clone().expect("arena just created");
+            let have = memory
+                .buffer()
+                .unchecked_into::<js_sys::ArrayBuffer>()
+                .byte_length()
+                / 65536;
+            if have < pages {
+                memory.grow(pages - have);
+            }
+            Ok(memory)
+        })?;
+        Reflect::set(env, &JsValue::from_str(&name), &memory)
+            .map_err(|e| fail("arena import set failed", e))?;
+    }
+    Ok(())
 }
 
 fn status_value(result: wasm_bindgen::JsValue) -> Result<u32, WasmCompileError> {

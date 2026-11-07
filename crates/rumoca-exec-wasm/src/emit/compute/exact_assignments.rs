@@ -208,7 +208,12 @@ fn private_entries_module(
     let count = u32::try_from(entries.len()).map_err(|_| "WASM entry count overflow")?;
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
-    let catalog = add_import_section(&mut module, &ready.imports, &types);
+    let catalog = add_import_section_with_arena(
+        &mut module,
+        &ready.imports,
+        &types,
+        Some(ready.arena.pages()),
+    );
     let first = catalog
         .eval_function_index
         .checked_add(
@@ -224,7 +229,6 @@ fn private_entries_module(
         functions.function(types.eval_type);
     }
     module.section(&functions);
-    ready.arena.add_memory(&mut module);
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
     let names = (0..count)
@@ -270,7 +274,12 @@ fn emit_module(
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
-    let mut catalog = add_import_section(&mut module, &ready.imports, &types);
+    let mut catalog = add_import_section_with_arena(
+        &mut module,
+        &ready.imports,
+        &types,
+        Some(ready.arena.pages()),
+    );
     catalog.eval_function_index = catalog
         .eval_function_index
         .checked_add(
@@ -283,7 +292,6 @@ fn emit_module(
     }
     functions.function(types.eval_type);
     module.section(&functions);
-    ready.arena.add_memory(&mut module);
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
     exports.export(
