@@ -401,6 +401,14 @@ impl SimulationSession {
         self.inner.reset(t_start)
     }
 
+    pub(crate) fn reset_with_inputs(
+        &mut self,
+        t_start: f64,
+        inputs: &[(&str, f64)],
+    ) -> Result<(), SimError> {
+        self.inner.reset_with_inputs(t_start, inputs)
+    }
+
     pub(crate) fn time(&self) -> f64 {
         self.inner.time()
     }

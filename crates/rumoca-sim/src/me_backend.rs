@@ -103,6 +103,16 @@ impl BackendSimulationSession {
         self.session.reset(t_start).map_err(Into::into)
     }
 
+    pub(crate) fn reset_with_inputs(
+        &mut self,
+        t_start: f64,
+        inputs: &[(&str, f64)],
+    ) -> Result<(), SimError> {
+        self.session
+            .reset_with_inputs(t_start, inputs)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn time(&self) -> f64 {
         self.session.time()
     }

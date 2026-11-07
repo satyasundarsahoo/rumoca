@@ -220,6 +220,16 @@ impl SimulationSession {
         self.inner.reset(t_start)
     }
 
+    /// Restart at `t_start` with the first values of these inputs, the starting
+    /// state computed from them (see `reset_with_inputs` on the ME session).
+    pub fn reset_with_inputs(
+        &mut self,
+        t_start: f64,
+        inputs: &[(&str, f64)],
+    ) -> Result<(), SimError> {
+        self.inner.reset_with_inputs(t_start, inputs)
+    }
+
     pub fn time(&self) -> f64 {
         self.inner.time()
     }

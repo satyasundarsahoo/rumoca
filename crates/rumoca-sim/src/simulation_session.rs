@@ -75,6 +75,26 @@ impl SimulationSession {
         }
     }
 
+    /// Restart at `t_start` with the first values of these inputs, on the model
+    /// already compiled: the starting state is computed from them, as for a
+    /// session constructed with them, without lowering and emitting again.
+    pub fn reset_with_inputs(
+        &mut self,
+        t_start: f64,
+        inputs: &[(&str, f64)],
+    ) -> Result<(), SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .reset_with_inputs(t_start, inputs)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .reset_with_inputs(t_start, inputs)
+                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+        }
+    }
+
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]

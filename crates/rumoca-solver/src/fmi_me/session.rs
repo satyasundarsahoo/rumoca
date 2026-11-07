@@ -39,7 +39,8 @@ use error::latched_failure;
 use options::trace_capacity;
 
 use super::{
-    MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, SolveMeKernel,
+    MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, MeValueRef,
+    SolveMeKernel,
     integrator::{
         MeAcceptedStep, MeAdvanceRequest, MeContinuousPoint, MeDerivativeController,
         MeIntegrationError, MeIntegratorBackend, MeNumericalSetup, MeStepProposal,
@@ -591,19 +592,44 @@ impl MeSimulationSession<'_, '_> {
     /// together: trace rows, inputs, termination, the time-event cache, the
     /// event streak, the timeout budget, and the plugin's history
     pub fn reset(&mut self, start_time: f64) -> Result<(), MeSessionError> {
+        self.reset_with_inputs(start_time, &[])
+    }
+
+    /// [`Self::reset`] with the first values of declared inputs given: they are
+    /// written while the component is in Initialization Mode, so the starting
+    /// state is computed from them, as a session constructed with them would.
+    /// Inputs not named keep the component's source values. An unknown name or
+    /// an inadmissible value is refused before anything moves.
+    pub fn reset_with_inputs(
+        &mut self,
+        start_time: f64,
+        inputs: &[(&str, f64)],
+    ) -> Result<(), MeSessionError> {
         self.require_usable()?;
+        let references = self.input_references(inputs)?;
+        let values: Vec<f64> = inputs.iter().map(|(_, value)| *value).collect();
+        self.host
+            .kernel
+            .borrow()?
+            .check_float64_inputs(&references, &values)?;
         // Rejecting an inadmissible restart coordinate moves nothing, so it
         // leaves an ordinary live session; everything after it does move the
         // component and the host caches together.
         let options = self.host.options.restarted_at(start_time)?;
         self.deferred = None;
         self.snapped_yield = None;
-        let restarted = self.restart_session(options);
+        let restarted = self.restart_session(options, inputs, &references, &values);
         self.host.guard_mutation(MeSessionLoss::Restart, restarted)
     }
 
     /// Discard every cache and rebuild the whole lifecycle.
-    fn restart_session(&mut self, options: MeSessionOptions) -> Result<(), MeSessionError> {
+    fn restart_session(
+        &mut self,
+        options: MeSessionOptions,
+        inputs: &[(&str, f64)],
+        references: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<(), MeSessionError> {
         self.host
             .kernel
             .restart(options.start_time(), options.stop_time())?;
@@ -620,6 +646,15 @@ impl MeSimulationSession<'_, '_> {
         self.host.budget = TimeoutBudget::new(options.max_wall_seconds());
         self.host.options = options;
 
+        if !inputs.is_empty() {
+            let mut kernel = self.host.kernel.borrow_mut()?;
+            if kernel.initialization_state() == crate::fmi_me::lifecycle::MeState::Instantiated {
+                kernel.enter_initialization_mode()?;
+            }
+            kernel.set_float64(references, values)?;
+            drop(kernel);
+            self.record_inputs(inputs);
+        }
         let outcome = run_fmi_initialization(
             &mut *self.host.kernel.borrow_mut()?,
             &self.host.options,

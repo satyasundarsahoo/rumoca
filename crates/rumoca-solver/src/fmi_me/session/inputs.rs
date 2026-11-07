@@ -49,7 +49,7 @@ impl MeSimulationSession<'_, '_> {
             .guard_mutation(MeSessionLoss::InputApplication, correlated)
     }
 
-    fn input_references(&self, inputs: &[(&str, f64)]) -> Result<Vec<MeValueRef>, MeSessionError> {
+    pub(super) fn input_references(&self, inputs: &[(&str, f64)]) -> Result<Vec<MeValueRef>, MeSessionError> {
         let kernel = self.host.kernel.borrow()?;
         inputs
             .iter()
@@ -105,7 +105,7 @@ impl MeSimulationSession<'_, '_> {
         }
     }
 
-    fn record_inputs(&mut self, inputs: &[(&str, f64)]) {
+    pub(super) fn record_inputs(&mut self, inputs: &[(&str, f64)]) {
         self.host.inputs.extend(
             inputs
                 .iter()
